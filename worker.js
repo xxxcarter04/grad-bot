@@ -1,5 +1,19 @@
 const WSOL='So11111111111111111111111111111111111111112';
+const rpc=(env,method,params)=>fetch('https://mainnet.helius-rpc.com/?api-key='+env.HELIUS_KEY,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})}).then(r=>r.json()).then(j=>j.result);
 const tg=(env,text)=>fetch('https://api.telegram.org/bot'+env.TG_TOKEN+'/sendMessage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:env.TG_CHAT,text})});
+async function handle(env,sig){
+  let tx=null;
+  for(let i=0;i<3&&!tx;i++){
+    tx=await rpc(env,'getTransaction',[sig,{encoding:'jsonParsed',maxSupportedTransactionVersion:0,commitment:'confirmed'}]).catch(()=>null);
+    if(!tx)await new Promise(r=>setTimeout(r,1000));
+  }
+  if(!tx||!tx.meta||tx.meta.err)return;
+  if(!(tx.meta.logMessages||[]).some(l=>l.includes('Instruction: Migrate')))return;
+  const ms=[...new Set([...(tx.meta.postTokenBalances||[]),...(tx.meta.preTokenBalances||[])].map(b=>b.mint))].filter(m=>m&&m!==WSOL);
+  const mint=ms.find(m=>m.endsWith('pump'))||ms[0];
+  if(!mint)return;
+  await tg(env,'🎓 Pump.fun graduation\n'+mint+'\nhttps://dexscreener.com/solana/'+mint+'\nhttps://pump.fun/coin/'+mint);
+}
 export default{
   async fetch(req,env,ctx){
     const url=new URL(req.url);
@@ -9,12 +23,7 @@ export default{
     }
     let txs=[];
     try{txs=await req.json()}catch(e){return new Response('bad',{status:400})}
-    for(const t of txs){
-      const ms=[...new Set((t.tokenTransfers||[]).map(x=>x.mint))].filter(m=>m&&m!==WSOL);
-      const mint=ms.find(m=>m.endsWith('pump'))||ms[0];
-      if(!mint)continue;
-      ctx.waitUntil(tg(env,'🎓 Pump.fun graduation\n'+mint+'\nhttps://dexscreener.com/solana/'+mint+'\nhttps://pump.fun/coin/'+mint));
-    }
+    for(const t of txs){if(t&&t.signature)ctx.waitUntil(handle(env,t.signature))}
     return new Response('ok');
   }
 };
