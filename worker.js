@@ -16,8 +16,13 @@ export class Tracker extends DurableObject{
   async list(){return [...(await this.ctx.storage.list({prefix:'t:'})).values()]}
   async del(m){await this.ctx.storage.delete('t:'+m)}
 }
+let lastSol=0;
 async function solUsd(){
-  try{const a=await(await fetch('https://api.dexscreener.com/tokens/v1/solana/'+WSOL)).json();const b=a.filter(x=>x.priceUsd).sort((x,y)=>liq(y)-liq(x))[0];return b?Number(b.priceUsd):0}catch(e){return 0}
+  for(let i=0;i<3;i++){
+    try{const a=await(await fetch('https://api.dexscreener.com/tokens/v1/solana/'+WSOL)).json();const b=a.filter(x=>x.priceUsd).sort((x,y)=>liq(y)-liq(x))[0];if(b){lastSol=Number(b.priceUsd);return lastSol}}catch(e){}
+    await sleep(700);
+  }
+  return lastSol;
 }
 async function socials(a){
   try{const u=a&&a.content&&a.content.json_uri;if(!u)return {};const j=await(await fetch(u,{signal:AbortSignal.timeout(4000)})).json();return {tw:j.twitter,web:j.website,tgm:j.telegram}}catch(e){return {}}
@@ -64,7 +69,7 @@ async function check(env){
       if(!hit.length)continue;
       r.hit=hit[hit.length-1];
       await st.add(r);
-      await tg(env,'🔥 <b>'+esc(r.sym)+'</b> is up '+x.toFixed(1)+'X\n💸 Now at '+money(p.marketCap||p.fdv||0)+'\n🚨 Alerted at '+(r.mc0?money(r.mc0):'n/a')+'\n\n<code>'+r.mint+'</code>\n\n'+links(r.mint));
+      await tg(env,'🔥 <b>'+esc(r.sym)+'</b> is up '+x.toFixed(1)+'X\n💸 Now at '+money(p.marketCap||p.fdv||0)+'\n🚨 Alerted at '+money(r.mc0||((p.marketCap||p.fdv||0)/x))+'\n\n<code>'+r.mint+'</code>\n\n'+links(r.mint));
     }
   }
 }
