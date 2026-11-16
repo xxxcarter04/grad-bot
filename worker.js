@@ -11,6 +11,15 @@ const links=m=>'<a href="https://dexscreener.com/solana/'+m+'">DexScreener</a> |
 const rpc=(env,method,params)=>fetch('https://mainnet.helius-rpc.com/?api-key='+env.HELIUS_KEY,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})}).then(r=>r.json()).then(j=>j.result);
 const tg=(env,text)=>Promise.all(String(env.TG_CHAT).split(',').map(c=>fetch('https://api.telegram.org/bot'+env.TG_TOKEN+'/sendMessage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:c.trim(),text,parse_mode:'HTML',link_preview_options:{is_disabled:true}})})));
 const store=env=>env.TRACK.get(env.TRACK.idFromName('main'));
+async function isDexPaid(mint){
+  try{
+    const r=await fetch('https://api.dexscreener.com/orders/v1/solana/'+mint,{signal:AbortSignal.timeout(3000)});
+    if(!r.ok)return false;
+    const d=await r.json();
+    const o=Array.isArray(d)?d:(d.orders||[]);
+    return o.some(x=>x.type==='tokenProfile'&&x.status==='approved');
+  }catch(e){return false}
+}
 export class Tracker extends DurableObject{
   async add(r){await this.ctx.storage.put('t:'+r.mint,r)}
   async list(){return [...(await this.ctx.storage.list({prefix:'t:'})).values()]}
@@ -42,6 +51,7 @@ async function handle(env,sig){
   if(!mint)return;
   const q=Math.max(0,...post.filter(b=>b.mint===WSOL).map(b=>Number(b.uiTokenAmount&&b.uiTokenAmount.uiAmount)||0));
   if(q<MIN_SOL)return;
+  if(!(await isDexPaid(mint)))return;
   const tk=Math.max(0,...post.filter(b=>b.mint===mint).map(b=>Number(b.uiTokenAmount&&b.uiTokenAmount.uiAmount)||0));
   const p0=tk>0?q/tk:0;
   const [asset,usd]=await Promise.all([rpc(env,'getAsset',{id:mint}).catch(()=>null),solUsd()]);
