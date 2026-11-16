@@ -11,8 +11,8 @@ async function handle(env,sig){
     if(!tx)await sleep(1000);
   }
   if(!tx||!tx.meta||tx.meta.err)return;
-  const logs=tx.meta.logMessages||[];await tg(env,'DEBUG https://solscan.io/tx/'+sig+'\n'+logs.filter(l=>l.includes('Instruction:')).slice(0,8).join('\n'));
-  if(!(logs.some(l=>/Instruction: Migrate$/.test(l))&&logs.some(l=>l.includes(PAMM))))return;
+  const logs=tx.meta.logMessages||[];
+  if(!(logs.some(l=>/Instruction: Migrate(V\d+)?$/.test(l))&&logs.some(l=>l.includes(PAMM))))return;
   const ms=[...new Set([...(tx.meta.postTokenBalances||[]),...(tx.meta.preTokenBalances||[])].map(b=>b.mint))].filter(m=>m&&m!==WSOL);
   const mint=ms.find(m=>m.endsWith('pump'))||ms[0];
   if(!mint)return;
