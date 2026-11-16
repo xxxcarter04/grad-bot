@@ -1,4 +1,4 @@
-const MIN_LIQ=4000,MIN_MCAP=15000;
+const MIN_SOL=30;
 const WSOL='So11111111111111111111111111111111111111112';
 const PAMM='pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -14,22 +14,15 @@ async function handle(env,sig){
   if(!tx||!tx.meta||tx.meta.err)return;
   const logs=tx.meta.logMessages||[];
   if(!(logs.some(l=>/Instruction: Migrate(V\d+)?$/.test(l))&&logs.some(l=>l.includes(PAMM))))return;
-  const ms=[...new Set([...(tx.meta.postTokenBalances||[]),...(tx.meta.preTokenBalances||[])].map(b=>b.mint))].filter(m=>m&&m!==WSOL);
-  const mint=ms.find(m=>m.endsWith('pump'))||ms[0];
+  const post=tx.meta.postTokenBalances||[];
+  const mints=[...new Set(post.concat(tx.meta.preTokenBalances||[]).map(b=>b.mint))];
+  const mint=mints.find(m=>m&&m.endsWith('pump'));
   if(!mint)return;
-  const dbg=r=>tg(env,'REJECT: '+esc(r)+'\nhttps://dexscreener.com/solana/'+mint);
-  let p=null;
-  for(let i=0;i<4&&!p;i++){
-    await sleep(4000);
-    try{const a=await(await fetch('https://api.dexscreener.com/tokens/v1/solana/'+mint)).json();p=a.find(x=>x.dexId==='pumpswap')||null}catch(e){}
-  }
-  if(!p)return dbg('no DexScreener data after 16s');
-  const liq=(p.liquidity&&p.liquidity.usd)||0,mc=p.marketCap||p.fdv||0;
-  if(p.pairCreatedAt&&Date.now()-p.pairCreatedAt>3600000)return dbg('pair older than 1h');
-  if(liq<MIN_LIQ||mc<MIN_MCAP)return dbg(p.baseToken.symbol+' liq $'+Math.round(liq)+' mcap $'+Math.round(mc));
-  const ch=p.priceChange&&p.priceChange.m5;
-  if(ch!=null&&ch<-50)return dbg(p.baseToken.symbol+' down '+ch+'% in 5m');
-  await tg(env,'🎓 <b>Pump.fun graduation</b>\n'+esc(p.baseToken.symbol)+' | liq $'+Math.round(liq)+' | mcap $'+Math.round(mc)+'\n\n<code>'+mint+'</code>\n\n<a href="https://dexscreener.com/solana/'+mint+'">DexScreener</a> | <a href="https://pump.fun/coin/'+mint+'">Pump.fun</a>');
+  const q=Math.max(0,...post.filter(b=>b.mint===WSOL).map(b=>Number(b.uiTokenAmount&&b.uiTokenAmount.uiAmount)||0));
+  if(q<MIN_SOL)return tg(env,'REJECT: pool '+q.toFixed(1)+' SOL\nhttps://dexscreener.com/solana/'+mint);
+  let name='';
+  try{const a=await rpc(env,'getAsset',{id:mint});const m=a&&a.content&&a.content.metadata;if(m)name=(m.symbol||'')+(m.name?' ('+m.name+')':'')}catch(e){}
+  await tg(env,'🎓 <b>Pump.fun graduation</b>\n'+esc(name||'new token')+' | pool '+q.toFixed(1)+' SOL\n\n<code>'+mint+'</code>\n\n<a href="https://dexscreener.com/solana/'+mint+'">DexScreener</a> | <a href="https://pump.fun/coin/'+mint+'">Pump.fun</a>');
 }
 export default{
   async fetch(req,env,ctx){
