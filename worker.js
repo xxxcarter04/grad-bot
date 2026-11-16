@@ -1,4 +1,4 @@
-const MIN_SOL=30;
+const MIN_SOL=50;
 const WSOL='So11111111111111111111111111111111111111112';
 const PAMM='pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -19,7 +19,7 @@ async function handle(env,sig){
   const mint=mints.find(m=>m&&m.endsWith('pump'));
   if(!mint)return;
   const q=Math.max(0,...post.filter(b=>b.mint===WSOL).map(b=>Number(b.uiTokenAmount&&b.uiTokenAmount.uiAmount)||0));
-  if(q<MIN_SOL)return tg(env,'REJECT: pool '+q.toFixed(1)+' SOL\nhttps://dexscreener.com/solana/'+mint);
+  if(q<MIN_SOL)return;
   let name='';
   try{const a=await rpc(env,'getAsset',{id:mint});const m=a&&a.content&&a.content.metadata;if(m)name=(m.symbol||'')+(m.name?' ('+m.name+')':'')}catch(e){}
   await tg(env,'🎓 <b>Pump.fun graduation</b>\n'+esc(name||'new token')+' | pool '+q.toFixed(1)+' SOL\n\n<code>'+mint+'</code>\n\n<a href="https://dexscreener.com/solana/'+mint+'">DexScreener</a> | <a href="https://pump.fun/coin/'+mint+'">Pump.fun</a>');
