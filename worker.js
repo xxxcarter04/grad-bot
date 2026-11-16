@@ -17,17 +17,18 @@ async function handle(env,sig){
   const ms=[...new Set([...(tx.meta.postTokenBalances||[]),...(tx.meta.preTokenBalances||[])].map(b=>b.mint))].filter(m=>m&&m!==WSOL);
   const mint=ms.find(m=>m.endsWith('pump'))||ms[0];
   if(!mint)return;
+  const dbg=r=>tg(env,'REJECT: '+esc(r)+'\nhttps://dexscreener.com/solana/'+mint);
   let p=null;
   for(let i=0;i<4&&!p;i++){
     await sleep(4000);
     try{const a=await(await fetch('https://api.dexscreener.com/tokens/v1/solana/'+mint)).json();p=a.find(x=>x.dexId==='pumpswap')||null}catch(e){}
   }
-  if(!p)return;
+  if(!p)return dbg('no DexScreener data after 16s');
   const liq=(p.liquidity&&p.liquidity.usd)||0,mc=p.marketCap||p.fdv||0;
-  if(p.pairCreatedAt&&Date.now()-p.pairCreatedAt>3600000)return;
-  if(liq<MIN_LIQ||mc<MIN_MCAP)return;
+  if(p.pairCreatedAt&&Date.now()-p.pairCreatedAt>3600000)return dbg('pair older than 1h');
+  if(liq<MIN_LIQ||mc<MIN_MCAP)return dbg(p.baseToken.symbol+' liq $'+Math.round(liq)+' mcap $'+Math.round(mc));
   const ch=p.priceChange&&p.priceChange.m5;
-  if(ch!=null&&ch<-50)return;
+  if(ch!=null&&ch<-50)return dbg(p.baseToken.symbol+' down '+ch+'% in 5m');
   await tg(env,'🎓 <b>Pump.fun graduation</b>\n'+esc(p.baseToken.symbol)+' | liq $'+Math.round(liq)+' | mcap $'+Math.round(mc)+'\n\n<code>'+mint+'</code>\n\n<a href="https://dexscreener.com/solana/'+mint+'">DexScreener</a> | <a href="https://pump.fun/coin/'+mint+'">Pump.fun</a>');
 }
 export default{
