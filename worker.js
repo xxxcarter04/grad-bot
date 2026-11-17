@@ -1,5 +1,7 @@
 import {DurableObject} from 'cloudflare:workers';
 const MIN_SOL=50,STEPS=[2,3,5,10,20,50,100];
+const WINDOW=20*60*1000; // how long to wait for a token to turn Dex paid (20 minutes)
+const MAX_RECHECK=40; // max tokens re-checked per run (DexScreener rate limit)
 const WSOL='So11111111111111111111111111111111111111112';
 const PAMM='pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -24,6 +26,9 @@ export class Tracker extends DurableObject{
   async add(r){await this.ctx.storage.put('t:'+r.mint,r)}
   async list(){return [...(await this.ctx.storage.list({prefix:'t:'})).values()]}
   async del(m){await this.ctx.storage.delete('t:'+m)}
+  async addW(r){await this.ctx.storage.put('w:'+r.mint,r)}
+  async listW(){return [...(await this.ctx.storage.list({prefix:'w:'})).values()]}
+  async delW(m){await this.ctx.storage.delete('w:'+m)}
 }
 let lastSol=0;
 async function solUsd(){
@@ -35,6 +40,12 @@ async function solUsd(){
 }
 async function socials(a){
   try{const u=a&&a.content&&a.content.json_uri;if(!u)return {};const j=await(await fetch(u,{signal:AbortSignal.timeout(4000)})).json();return {tw:j.twitter,web:j.website,tgm:j.telegram}}catch(e){return {}}
+}
+async function sendGrad(env,d,late){
+  const mins=Math.max(0,Math.round((Date.now()-d.t0)/60000));
+  const head=late?'✅ <b>Now Dex paid</b> (graduated '+mins+' min ago)\n':'✅ Dex paid\n';
+  await tg(env,'🎓 <b>Pump.fun graduation</b>\n'+head+esc(d.name)+'\nMcap '+(d.mc0?money(d.mc0):'n/a')+' | pool '+d.q.toFixed(1)+' SOL\n'+(d.soc?d.soc+'\n':'')+'\n<code>'+d.mint+'</code>\n\n'+links(d.mint));
+  try{if(d.p0>0)await store(env).add({mint:d.mint,sym:d.sym,p0:d.p0,mc0:d.mc0,t0:Date.now(),hit:1})}catch(e){}
 }
 async function handle(env,sig){
   let tx=null;
@@ -51,18 +62,35 @@ async function handle(env,sig){
   if(!mint)return;
   const q=Math.max(0,...post.filter(b=>b.mint===WSOL).map(b=>Number(b.uiTokenAmount&&b.uiTokenAmount.uiAmount)||0));
   if(q<MIN_SOL)return;
-  if(!(await isDexPaid(mint)))return;
   const tk=Math.max(0,...post.filter(b=>b.mint===mint).map(b=>Number(b.uiTokenAmount&&b.uiTokenAmount.uiAmount)||0));
   const p0=tk>0?q/tk:0;
-  const [asset,usd]=await Promise.all([rpc(env,'getAsset',{id:mint}).catch(()=>null),solUsd()]);
+  const [asset,usd,paid]=await Promise.all([rpc(env,'getAsset',{id:mint}).catch(()=>null),solUsd(),isDexPaid(mint)]);
   const m=asset&&asset.content&&asset.content.metadata;
   const sym=(m&&m.symbol)||'';
   const name=sym+(m&&m.name?' ('+m.name+')':'');
   const so=await socials(asset);
   const mc0=p0*1e9*usd;
   const soc=[['Twitter',so.tw],['Website',so.web],['Telegram',so.tgm]].filter(x=>safe(x[1])).map(x=>'<a href="'+safe(x[1])+'">'+x[0]+'</a>').join(' | ');
-  await tg(env,'🎓 <b>Pump.fun graduation</b>\n'+esc(name||'new token')+'\nMcap '+(mc0?money(mc0):'n/a')+' | pool '+q.toFixed(1)+' SOL\n'+(soc?soc+'\n':'')+'\n<code>'+mint+'</code>\n\n'+links(mint));
-  try{if(p0>0)await store(env).add({mint,sym:sym||'token',p0,mc0,t0:Date.now(),hit:1})}catch(e){}
+  const d={mint,sym:sym||'token',name:name||'new token',q,soc,p0,mc0,t0:Date.now()};
+  if(paid){await sendGrad(env,d,false)}
+  else{try{await store(env).addW(d)}catch(e){}}
+}
+async function checkPending(env){
+  const st=store(env),list=await st.listW(),now=Date.now();
+  let n=0;
+  for(const d of list){
+    if(now-d.t0>WINDOW){await st.delW(d.mint);continue}
+    if(n>=MAX_RECHECK)break;
+    n++;
+    if(!(await isDexPaid(d.mint)))continue;
+    await st.delW(d.mint);
+    try{
+      const ps=await(await fetch('https://api.dexscreener.com/tokens/v1/solana/'+d.mint,{signal:AbortSignal.timeout(4000)})).json();
+      const p=ps.filter(x=>x.baseToken.address===d.mint&&x.quoteToken.address===WSOL&&x.priceNative).sort((a,b)=>liq(b)-liq(a))[0];
+      if(p){d.p0=Number(p.priceNative);d.mc0=p.marketCap||p.fdv||d.mc0}
+    }catch(e){}
+    await sendGrad(env,d,true);
+  }
 }
 async function check(env){
   const st=store(env),all=await st.list(),now=Date.now(),live=[];
@@ -95,5 +123,5 @@ export default{
     for(const t of txs){if(t&&t.signature)ctx.waitUntil(handle(env,t.signature))}
     return new Response('ok');
   },
-  async scheduled(e,env,ctx){ctx.waitUntil(check(env))}
+  async scheduled(e,env,ctx){ctx.waitUntil(Promise.all([check(env),checkPending(env).catch(()=>{})]))}
 };
