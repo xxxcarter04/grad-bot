@@ -1,6 +1,7 @@
 import {DurableObject} from 'cloudflare:workers';
 const MIN_SOL=50,STEPS=[2,3,5,10,20,50,100];
-const WINDOW=20*60*1000; // how long to wait for a token to turn Dex paid (20 minutes)
+const WINDOW=20*60*1000; // legacy pending window
+const DEX_WINDOW=60*60*1000; // how long to watch for a Dex paid profile after the graduation alert
 const MAX_RECHECK=40; // max tokens re-checked per run (DexScreener rate limit)
 const WSOL='So11111111111111111111111111111111111111112';
 const PAMM='pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
@@ -165,6 +166,10 @@ async function sendGrad(env,d,late,pair){
   if(b)stats.push('🧩 Bundled '+(b.pct==null?'n/a':b.pct.toFixed(1)+'%')+(b.wallets?' · '+b.wallets+' wallets / '+b.groups+(b.groups===1?' funder':' funders'):'')+' | Top10 '+(b.top10?b.top10.toFixed(1)+'%':'n/a')+' | Dev '+(b.dev==null?'n/a':b.dev.toFixed(1)+'%')+' | LP '+(b.lpBurned==null?'n/a':b.lpBurned?'burned ✅':'⚠️ not burned'));
   await tg(env,'🎓 <b>Pump.fun graduation</b>\n'+head+esc(d.name)+'\nMcap '+(d.mc0?money(d.mc0):'n/a')+' | pool '+d.q.toFixed(1)+' SOL\n'+(d.soc?d.soc+'\n':'')+(stats.length?'\n'+stats.join('\n')+'\n':'')+'\n<code>'+d.mint+'</code>\n\n'+links(d.mint));
   try{if(d.p0>0)await store(env).add({mint:d.mint,sym:d.sym,p0:d.p0,mc0:d.mc0,t0:Date.now(),hit:1})}catch(e){}
+  if(!d.paid)try{await store(env).addW({mint:d.mint,sym:d.sym||'token',t0:Date.now()})}catch(e){}
+}
+async function sendDexPaid(env,d){
+  await tg(env,'✅ <b>Dex paid</b>\n'+esc(d.sym||'token')+'\n\n<code>'+d.mint+'</code>\n\n'+links(d.mint));
 }
 async function handle(env,sig){
   let tx=null;
@@ -196,18 +201,13 @@ async function handle(env,sig){
 async function checkPending(env){
   const st=store(env),list=await st.listW(),now=Date.now();
   let n=0;
-  for(const d of list){
-    if(now-d.t0>WINDOW){await st.delW(d.mint);continue}
+  for(const w of list){
+    if(now-w.t0>DEX_WINDOW){await st.delW(w.mint);continue}
     if(n>=MAX_RECHECK)break;
     n++;
-    await st.delW(d.mint);
-    let p=null;
-    try{
-      const ps=await(await fetch('https://api.dexscreener.com/tokens/v1/solana/'+d.mint,{signal:AbortSignal.timeout(4000)})).json();
-      p=(Array.isArray(ps)?ps:[]).filter(x=>x.baseToken&&x.baseToken.address===d.mint&&x.quoteToken&&x.quoteToken.address===WSOL&&x.priceNative).sort((a,b)=>liq(b)-liq(a))[0];
-      if(p){d.p0=Number(p.priceNative);d.mc0=p.marketCap||p.fdv||d.mc0}
-    }catch(e){}
-    await sendGrad(env,d,true,p);
+    if(!(await isDexPaid(w.mint)))continue;
+    await st.delW(w.mint);
+    await sendDexPaid(env,w);
   }
 }
 async function check(env){

@@ -32,7 +32,8 @@ In addition to market cap, pool size and socials, graduation alerts now show:
 - **LP** — `burned ✅` when Rugcheck shows the pump.fun/pump_fun_amm market's LP mint burned or
   fully locked with zero circulating LP supply; otherwise `⚠️ not burned` or `n/a`.
 - **Dex paid** — shown as a badge only when the token actually has an approved DexScreener paid
-  profile. It no longer gates alerts: every graduation is alerted.
+  profile. It no longer gates alerts: every graduation is alerted. If the profile is bought later,
+  a separate `✅ Dex paid` notification is sent; tokens are watched for up to 60 minutes.
 
 ## Why alerts were missed
 
