@@ -20,6 +20,8 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const capT=(p,ms)=>Promise.race([p,sleep(ms).then(()=>null)]);
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const money=n=>n>=1e6?'$'+(n/1e6).toFixed(2)+'M':n>=1e3?'$'+(n/1e3).toFixed(1)+'K':'$'+Math.round(n);
+// SOL amounts: 1234 SOL, 12.3 SOL, 1.23 SOL, 0.012 SOL
+const solFmt=n=>n>=100?Math.round(n).toLocaleString('en-US'):n>=10?n.toFixed(1):n>=1?n.toFixed(2):n.toFixed(3);
 const pc=n=>n==null||!isFinite(n)?'n/a':n.toFixed(1)+'%';
 const safe=u=>/^https?:\/\//.test(u||'')?esc(u).replace(/"/g,'&quot;'):'';
 const imgUrl=u=>{u=String(u||'');if(u.startsWith('ipfs://'))u='https://ipfs.io/ipfs/'+u.slice(7).replace(/^ipfs\//,'');return /^https?:\/\//.test(u)?u:''};
@@ -138,7 +140,7 @@ async function holderStats(env,mint,skipSet,out,funders){
     rpc(env,'getTokenSupply',[mint,{commitment:'confirmed'}])
   ]);
   out.supply=Number(sup&&sup.value&&sup.value.amount)||0;
-  // FIX: the RPC returns {context,value:[...]}, the old code looked for a plain array and always found nothing
+  // the RPC returns {context,value:[...]}, not a plain array
   const top=(accs&&Array.isArray(accs.value)?accs.value:[]).filter(a=>Number(a.amount)>0).sort((a,b)=>Number(b.amount)-Number(a.amount));
   if(!top.length||!out.supply)return;
   const m=await rpc(env,'getMultipleAccounts',[top.map(a=>a.address),{encoding:'jsonParsed',commitment:'confirmed'}]);
@@ -208,9 +210,16 @@ async function gatherStats(env,d,pair){
     const rs=Number(rug.token&&rug.token.supply)||0;
     if(rs)dev=Number(rug.creatorBalance)/rs*100;
   }
+  // ---- total fees in SOL ----
+  // curve fees: SOL spent on the bonding curve x curve fee rate (needs no price at all)
+  // pool fees: 24h volume (USD from DexScreener) converted to SOL x pool fee rate (needs the SOL price)
   const usd=Number(d.usd)||lastSol;
   const v24=Number(pair&&pair.volume&&pair.volume.h24)||0;
-  const fees=(fee.done||fee.sol>0)?fee.sol*usd*FEE_CURVE+v24*(fee.feePct||FEE_DEFAULT):null;
+  const curveSol=fee.sol*FEE_CURVE;
+  const poolSol=usd>0?(v24/usd)*(fee.feePct||FEE_DEFAULT):0;
+  const fees=(fee.done||fee.sol>0)?curveSol+poolSol:null;
+  // if the SOL price was missing, the pool part is left out, so show the number as a minimum (≥)
+  const feesCapped=fee.capped||(v24>0&&!(usd>0));
   let top10=hold.holders.length?hold.top10:null;
   if(top10==null&&rug&&Array.isArray(rug.topHolders)){
     top10=rug.topHolders.filter(h=>h&&!SKIP_OWNERS.has(h.owner)&&!skip.has(h.owner)).slice(0,10).reduce((s,h)=>s+(Number(h.pct)||0),0)||null;
@@ -221,7 +230,7 @@ async function gatherStats(env,d,pair){
     const rm=risk&&String(risk.value||risk.description||'').match(/(\d+(?:\.\d+)?)\s*%/);
     if(rm)bundled=Number(rm[1]);
   }
-  return {fees,feesCapped:fee.capped,bundled,wallets:hold.wallets,groups:hold.groups,top10,dev};
+  return {fees,feesCapped,bundled,wallets:hold.wallets,groups:hold.groups,top10,dev};
 }
 export class Tracker extends DurableObject{
   async add(r){await this.ctx.storage.put('t:'+r.mint,r)}
@@ -236,11 +245,21 @@ export class Tracker extends DurableObject{
   async delS(k){await this.ctx.storage.delete(k)}
 }
 let lastSol=0;
+// SOL/USD price: DexScreener first, Coinbase as backup. Returns the last known price (or 0) if both fail.
 async function solUsd(){
-  for(let i=0;i<3;i++){
-    try{const a=await(await fetch('https://api.dexscreener.com/tokens/v1/solana/'+WSOL)).json();const b=a.filter(x=>x.priceUsd).sort((x,y)=>liq(y)-liq(x))[0];if(b){lastSol=Number(b.priceUsd);return lastSol}}catch(e){}
-    await sleep(700);
+  for(let i=0;i<2;i++){
+    try{
+      const a=await(await fetch('https://api.dexscreener.com/tokens/v1/solana/'+WSOL,{signal:AbortSignal.timeout(3000)})).json();
+      const b=Array.isArray(a)&&a.filter(x=>x.priceUsd).sort((x,y)=>liq(y)-liq(x))[0];
+      if(b){lastSol=Number(b.priceUsd);return lastSol}
+    }catch(e){}
+    await sleep(300);
   }
+  try{
+    const j=await(await fetch('https://api.coinbase.com/v2/prices/SOL-USD/spot',{signal:AbortSignal.timeout(3000)})).json();
+    const v=Number(j&&j.data&&j.data.amount);
+    if(v>0){lastSol=v;return v}
+  }catch(e){}
   return lastSol;
 }
 async function socials(a){
@@ -252,7 +271,7 @@ async function sendGrad(env,d,late,pair){
   const s=await gatherStats(env,d,pair).catch(e=>{console.error('stats',e&&e.message);return null});
   const stats=[];
   if(s){
-    stats.push('💰 Total fees '+(s.fees==null?'n/a':(s.feesCapped?'≥':'~')+money(s.fees)));
+    stats.push('💰 Total fees '+(s.fees==null?'n/a':(s.feesCapped?'≥':'~')+solFmt(s.fees)+' SOL'));
     stats.push('🧩 Bundled '+(s.bundled==null?'n/a':pc(s.bundled)+(s.wallets?' ('+s.wallets+' wallets / '+s.groups+(s.groups===1?' funder)':' funders)'):''))+' | Top10 '+pc(s.top10));
     stats.push('👤 Dev '+devText(s.dev));
   }
@@ -288,7 +307,13 @@ async function handle(env,sig){
   const tk=mintBals.length?ui(mintBals[0]):0;
   const pool=(mintBals[0]&&mintBals[0].owner)||null; // the new pool: its vault holds the most tokens in this tx
   const p0=tk>0?q/tk:0;
-  const [asset,usd,paid,pair]=await Promise.all([rpc(env,'getAsset',{id:mint}).catch(()=>null),solUsd(),isDexPaid(mint),dexPair(mint)]);
+  const [asset,usd0,paid,pair]=await Promise.all([rpc(env,'getAsset',{id:mint}).catch(()=>null),solUsd(),isDexPaid(mint),dexPair(mint)]);
+  // SOL price: use the lookup, or derive it from the pair (USD price / SOL price) if both price APIs failed
+  let usd=Number(usd0)||0;
+  if(!usd&&pair&&Number(pair.priceUsd)>0&&Number(pair.priceNative)>0){
+    usd=Number(pair.priceUsd)/Number(pair.priceNative);
+    lastSol=usd;
+  }
   const m=asset&&asset.content&&asset.content.metadata;
   const sym=(m&&m.symbol)||'';
   const name=sym+(m&&m.name?' ('+m.name+')':'');
